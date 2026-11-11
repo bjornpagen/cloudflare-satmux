@@ -204,6 +204,102 @@ Notes on the settings:
   packet framing over a socket pair). It has not carried real traffic through a utun.
 - Nothing here has had a security review.
 
+## What was measured
+
+One session, one inflight network, a handful of samples each: read these as observations, not
+as benchmarks. The link was a low-latency one (a 70 ms floor and 115 ms average round trip to
+the nearest edge, with spikes past 300 ms, no loss in 60 pings, full 1500-byte packets), not a
+geostationary one. Every test used small requests; nothing here is a throughput figure.
+
+**Opening a connection.** One small HTTPS request on a fresh connection, median seconds (95th
+percentile in brackets):
+
+| At once | Through the relay | Direct |
+|---|---|---|
+| 1 | 0.44 (0.62) | 0.66 (0.90) |
+| 4 | 0.42 (0.56) | 0.82 (1.29) |
+| 16 | 0.37 (0.53) | 0.88 (1.31) |
+| 48 | 0.49 (0.66) | 0.74 (1.35) |
+
+The relay's side stays flat as more are opened at once; direct gets worse. Where the time goes
+on the direct side: the name lookup alone was 0.10 to 0.20 s per new name, though the network's
+own resolver answered in under 10 ms, and then a TCP and a TLS handshake across the link. The
+relay pays neither: the carrier is already up and the name is resolved at the far end.
+
+**A non-HTTPS port.** Time to an SSH server's banner on port 22: 0.13 s through the relay,
+0.44 s direct.
+
+**A connection that is already open.** A small exchange every two seconds on connections held
+for two minutes: 0.115 s through the relay (0.160 at the 95th percentile, 0.22 worst) against
+0.094 s direct (0.197, 0.35 worst). The relay costs about 20 ms on an open connection and has
+the tighter tail. No held connection dropped in that time.
+
+**What the Workers runtime does**, as measured rather than as documented:
+
+- An onward `connect()` is refused with one and the same error text for a destination
+  Cloudflare serves, a private address, a name that does not exist, a closed port and an
+  unrouted address. The relay cannot tell forbidden from dead, so the client decides (see
+  *Verdicts* above). In practice every Cloudflare-fronted site goes direct.
+- On the free plan the fifty-first onward connection of one invocation is refused, and every
+  one after it, while the carrier's WebSocket and its echoes go on working. A carrier is one
+  invocation, so a carrier has a life of fifty streams. Before the pool counted that, a burst
+  of 48 requests spent all three carriers and every later flow failed while the pool still
+  called them ready. With the count, 130 requests in sequence on one carrier and four bursts
+  of 48 on three all succeeded, and no carrier was ever driven to the limit.
+- A carrier takes about 0.4 s to dial on this link (TCP 0.08, TLS 0.2, the upgrade 0.12).
+  With a life of fifty streams that is paid often, in the background.
+
+**What the network passed.** Every TCP port tried, UDP on an arbitrary port, and DNS to an
+outside resolver without interception. That is this network; the project this one credits
+reports geostationary services that intercept DNS, disturb port 443 and drop UDP.
+
+## Known problems
+
+- **A long-lived connection is cut when its carrier is retired.** A retired carrier is closed
+  a fixed time after its successor comes up (the rotation time again), whether or not streams
+  are still open on it. With rotation set to 20 s a held connection dropped at 36 s; at 600 s
+  an SSH session or a chat socket lasts ten to twenty minutes, and less under load now that
+  carriers also retire by stream count. A draining carrier should live while it has streams,
+  with its own, separate cap.
+- **Throughput through the Worker is two-valued and unexplained.** A 10 MB transfer either
+  matched the direct rate (about 3 MB/s) or ran at a steady 0.33 MB/s for its whole length.
+  It was not the port: all three showed both. The slow ones clustered late in a carrier's
+  life. Not pursued further, since bulk transfer is not what this is for and is not something
+  to test on someone else's platform.
+- **The `Spent` answer and its replay are not exercised end to end by a test.** The native
+  relay has no stream allowance to run out, so only the pool's property test (which generates
+  the event) and live runs cover it. Giving the native relay an allowance would let the suite
+  drive the whole path.
+- **The tunnel front end has never carried real traffic** (as above).
+
+## Open work
+
+Roughly in the order the measurements argue for.
+
+1. Fix the cut of long-lived connections (above).
+2. A native relay worth deploying, which is where everything a hosted runtime forbids becomes
+   possible: no stream allowance, no refused destinations, and control of the relay's own TCP.
+   Concretely: take its listening sockets from the supervisor instead of binding them (socket
+   activation); settings for congestion control, segment size and unsent-data limits on its
+   sockets; a stream allowance of its own for testing; log lines with a priority.
+3. More than one carrier to a port. Today the pool keeps one carrier per configured port and
+   the ports must differ, so the carrier count is tied to how many ports the relay answers on.
+4. The cost of a dial: TLS session resumption and early data, so a replacement carrier costs a
+   round trip less. Not yet measured whether the client resumes today.
+5. A carrier over QUIC, where the network passes UDP: streams that do not block one another
+   when a packet is lost, and a resumed dial with no extra round trip.
+6. A throughput benchmark, to be run only against a relay on one's own machine.
+7. A `rustfmt.toml` that states the formatting the code already has.
+
+Looked at and not planned:
+
+- **Compression on the carrier.** A CONNECT proxy and a tunnel carry TLS ciphertext, which
+  does not compress.
+- **Fetching at the relay** (the relay ends TLS and returns the body). It saves a handshake
+  per new origin, more on a long-delay link, but the relay then reads every request and
+  response, and only a tool pointed at a special local port can use it. SSH, chat and any
+  program that does its own TLS cannot.
+
 ## Credit
 
 The idea, and the name, come from [Th0rgal/satmux](https://github.com/Th0rgal/satmux) by
