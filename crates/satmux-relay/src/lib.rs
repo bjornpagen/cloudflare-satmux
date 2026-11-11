@@ -165,6 +165,11 @@ struct Workers;
 /// consider using fetch instead"; that follows the port, not the reason. A port that drops
 /// packets gets no text: the relay's own connect timer answers `TimedOut`.
 ///
+/// MEASURED (the edge, free plan): the fifty-first onward connection of one invocation, and so
+/// of one carrier, is rejected with `Too many subrequests by single Worker invocation`, and so
+/// is every one after it, while the carrier's own WebSocket and its echoes go on working. That
+/// is `Spent`: the client retires the carrier and sends the open on another.
+///
 /// So the text does NOT tell a forbidden destination from a dead one, and it is `Forbidden`:
 /// the client then tries the destination directly, and writes its "direct" row only if that
 /// connect succeeds (satmux-carrier's `route`). A dead origin costs one failed direct connect
@@ -172,7 +177,9 @@ struct Workers;
 fn status_of_refusal(text: &str) -> Status {
     let text = text.to_ascii_lowercase();
     let has = |needles: &[&str]| needles.iter().any(|needle| text.contains(needle));
-    if has(&["cannot connect to the specified address", "prohibited", "not allowed", "not permitted", "private", "internal"]) {
+    if has(&["too many subrequests"]) {
+        Status::Spent
+    } else if has(&["cannot connect to the specified address", "prohibited", "not allowed", "not permitted", "private", "internal"]) {
         Status::Forbidden
     } else if has(&["dns", "resolve", "no such host", "name not"]) {
         Status::NoSuchName
@@ -205,9 +212,14 @@ impl Platform for Workers {
     }
 
     async fn doh(&self, query: &[u8]) -> Result<Vec<u8>, Status> {
+        // A lookup is a fetch, which the platform counts with the connects.
         let failed = |error: worker::Error| {
-            console_error!("satmux-relay: dns: {error}");
-            Status::Unreachable
+            let text = error.to_string();
+            console_error!("satmux-relay: dns: {text}");
+            match status_of_refusal(&text) {
+                Status::Spent => Status::Spent,
+                _ => Status::Unreachable,
+            }
         };
         let headers = Headers::new();
         headers.set("Content-Type", DNS_MESSAGE).map_err(failed)?;

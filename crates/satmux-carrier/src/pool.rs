@@ -39,6 +39,11 @@ pub struct Rules {
     pub suspect: Duration,
     pub rotate: Duration,
     pub no_carrier_exit: Duration,
+    /// Most streams one carrier opens in its whole life: what the relay's platform allows it.
+    pub flows: usize,
+    /// A carrier that has opened this many gets a successor dialed, so the next is ready before
+    /// this one is spent. At or above `flows`, the successor is dialed only once it is spent.
+    pub renew: usize,
 }
 
 /// The stream every live carrier holds for its own echoes.
@@ -56,6 +61,8 @@ pub enum Echo {
 pub struct Live<S> {
     pub session: S,
     pub streams: usize,
+    /// Streams opened on this carrier since it was dialed, closed ones included.
+    pub opened: usize,
 }
 
 /// A carrier's state. A timestamp exists only in the state it belongs to.
@@ -92,6 +99,8 @@ pub enum Event<S> {
     Died { id: CarrierId },
     /// A stream [`Machine::pick`] counted has ended.
     FlowClosed { id: CarrierId },
+    /// The relay said this carrier can open nothing more.
+    Spent { id: CarrierId },
     /// Nothing happened but time.
     Tick,
 }
@@ -137,21 +146,29 @@ impl<S: Clone> Machine<S> {
         &self.rules
     }
 
-    /// The carrier a new stream goes to: ready, with room, the fewest streams, then the
-    /// shortest round trip. The stream is counted until [`Event::FlowClosed`].
-    pub fn pick(&mut self) -> Option<(CarrierId, S)> {
-        let limit = self.rules.streams;
-        self.carriers
+    /// The carrier a new stream goes to: ready, with room and with flows left, the fewest
+    /// streams, then the shortest round trip. The stream is counted until
+    /// [`Event::FlowClosed`], and against the carrier's life for good. The actions are what the
+    /// pick made due: a successor for a carrier that has now opened enough.
+    pub fn pick(&mut self, now: At) -> (Option<(CarrierId, S)>, Vec<Action<S>>) {
+        let (limit, flows) = (self.rules.streams, self.rules.flows);
+        let picked = self
+            .carriers
             .iter_mut()
             .filter_map(|carrier| match &mut carrier.state {
-                State::Ready { live, rtt, .. } if live.streams < limit => Some((live.streams, *rtt, carrier.id, live)),
+                State::Ready { live, rtt, .. } if live.streams < limit && live.opened < flows => Some((live.streams, *rtt, carrier.id, live)),
                 State::Ready { .. } | State::Dialing { .. } | State::Suspect { .. } | State::Draining { .. } => None,
             })
             .min_by_key(|(streams, rtt, id, _)| (*streams, *rtt, *id))
             .map(|(_, _, id, live)| {
                 live.streams += 1;
+                live.opened += 1;
                 (id, live.session.clone())
-            })
+            });
+        let mut actions = Vec::new();
+        self.expire(now, &mut actions);
+        self.settle(now, &mut actions);
+        (picked, actions)
     }
 
     /// The next moment a [`Event::Tick`] would change anything.
@@ -221,6 +238,17 @@ impl<S: Clone> Machine<S> {
                     }
                 }
             }
+            Event::Spent { id } => {
+                let flows = self.rules.flows;
+                if let Some(carrier) = self.carriers.iter_mut().find(|c| c.id == id) {
+                    match &mut carrier.state {
+                        State::Dialing { .. } => {}
+                        State::Ready { live, .. } | State::Suspect { live, .. } | State::Draining { live, .. } => {
+                            live.opened = live.opened.max(flows);
+                        }
+                    }
+                }
+            }
             Event::Tick => {}
         }
         self.expire(now, &mut actions);
@@ -258,7 +286,7 @@ impl<S: Clone> Machine<S> {
         for mut carrier in std::mem::take(&mut self.carriers) {
             if carrier.id == id {
                 carrier.state = State::Ready {
-                    live: Live { session: session.clone(), streams: LIVENESS_STREAMS },
+                    live: Live { session: session.clone(), streams: LIVENESS_STREAMS, opened: 0 },
                     born: now,
                     rtt,
                     echo: Echo::Sent { at: now },
@@ -360,14 +388,15 @@ impl<S: Clone> Machine<S> {
     }
 
     /// Makes every port have what it should (a dial in flight unless a ready carrier is young
-    /// enough), and brings the cover up to date.
+    /// enough and has opened few enough), and brings the cover up to date.
     fn settle(&mut self, now: At, actions: &mut Vec<Action<S>>) {
+        let worn = self.rules.renew.min(self.rules.flows);
         for port in self.rules.ports.clone() {
             if self.dialing(port) {
                 continue;
             }
             let young = self.carriers.iter().any(|c| match &c.state {
-                State::Ready { born, .. } => c.port == port && now < born.after(self.rules.rotate),
+                State::Ready { born, live, .. } => c.port == port && now < born.after(self.rules.rotate) && live.opened < worn,
                 State::Dialing { .. } | State::Suspect { .. } | State::Draining { .. } => false,
             });
             if young {
@@ -422,6 +451,7 @@ mod tests {
         Die(Index),
         Pick,
         CloseFlow(Index),
+        Spend(Index),
     }
 
     fn op() -> impl Strategy<Value = Op> {
@@ -435,18 +465,21 @@ mod tests {
             1 => any::<Index>().prop_map(Op::Die),
             3 => Just(Op::Pick),
             2 => any::<Index>().prop_map(Op::CloseFlow),
+            1 => any::<Index>().prop_map(Op::Spend),
         ]
     }
 
     fn rules() -> impl Strategy<Value = Rules> {
-        (proptest::collection::btree_set(1..=u16::MAX, 1..4), 2..6usize, 1..2000u64, 1..2000u64, 1..20_000u64, 1..10_000u64).prop_map(
-            |(ports, streams, echo_idle, suspect, rotate, exit)| Rules {
+        (proptest::collection::btree_set(1..=u16::MAX, 1..4), 2..6usize, 1..2000u64, 1..2000u64, 1..20_000u64, 1..10_000u64, 1..8usize, 1..10usize).prop_map(
+            |(ports, streams, echo_idle, suspect, rotate, exit, flows, renew)| Rules {
                 ports: ports.into_iter().collect(),
                 streams,
                 echo_idle: Duration::from_millis(echo_idle),
                 suspect: Duration::from_millis(suspect),
                 rotate: Duration::from_millis(rotate),
                 no_carrier_exit: Duration::from_millis(exit),
+                flows,
+                renew,
             },
         )
     }
@@ -503,15 +536,17 @@ mod tests {
             prop_assert_eq!(dialing, self.dials.iter().copied().collect::<BTreeSet<_>>(), "every dial in flight was asked for exactly once");
             for port in &rules.ports {
                 let on_port = || machine.carriers().iter().filter(|c| c.port == *port);
-                let ready: Vec<&At> = on_port().filter_map(|c| if let State::Ready { born, .. } = &c.state { Some(born) } else { None }).collect();
+                let ready: Vec<(&At, usize)> =
+                    on_port().filter_map(|c| if let State::Ready { born, live, .. } = &c.state { Some((born, live.opened)) } else { None }).collect();
                 prop_assert!(ready.len() <= 1, "two ready carriers on one port");
                 let dialing = on_port().any(|c| matches!(c.state, State::Dialing { .. }));
-                let young = ready.iter().any(|born| self.now < born.after(rules.rotate));
-                prop_assert!(dialing || young, "a port has neither a young ready carrier nor a dial in flight");
+                let young = ready.iter().any(|(born, opened)| self.now < born.after(rules.rotate) && *opened < rules.renew.min(rules.flows));
+                prop_assert!(dialing || young, "a port has neither a young, unworn ready carrier nor a dial in flight");
             }
             for carrier in machine.carriers() {
                 if let Some(live) = live(&carrier.state) {
                     prop_assert!(live.streams <= rules.streams);
+                    prop_assert!(live.opened <= rules.flows, "a carrier opened more than its life allows");
                 }
             }
             let ready = machine.carriers().iter().any(|c| matches!(c.state, State::Ready { .. }));
@@ -562,30 +597,39 @@ mod tests {
                         if model.dials.is_empty() { continue }
                         Event::DialFailed { id: model.dials.remove(index.index(model.dials.len())) }
                     }
-                    Op::Reply(index) | Op::Die(index) => {
+                    Op::Reply(index) | Op::Die(index) | Op::Spend(index) => {
                         let connected: Vec<CarrierId> = machine.carriers().iter().filter(|c| live(&c.state).is_some()).map(|c| c.id).collect();
                         if connected.is_empty() { continue }
                         let id = connected[index.index(connected.len())];
-                        if let Op::Reply(_) = op { Event::EchoReply { id } } else { Event::Died { id } }
+                        match op {
+                            Op::Reply(_) => Event::EchoReply { id },
+                            Op::Die(_) => Event::Died { id },
+                            _ => Event::Spent { id },
+                        }
                     }
                     Op::Pick => {
-                        let limit = machine.rules().streams;
+                        let (limit, flows) = (machine.rules().streams, machine.rules().flows);
                         let expected = machine
                             .carriers()
                             .iter()
                             .filter_map(|c| match &c.state {
-                                State::Ready { live, rtt, .. } if live.streams < limit => Some((live.streams, *rtt, c.id, live.session)),
+                                State::Ready { live, rtt, .. } if live.streams < limit && live.opened < flows => {
+                                    Some((live.streams, *rtt, c.id, live.session, live.opened))
+                                }
                                 _ => None,
                             })
                             .min()
-                            .map(|(streams, _, id, session)| (id, session, streams));
-                        let picked = machine.pick();
-                        prop_assert_eq!(picked, expected.map(|(id, session, _)| (id, session)), "a flow goes to the least-loaded ready carrier, or nowhere");
-                        if let Some((id, _, before)) = expected {
-                            let after = machine.carriers().iter().find(|c| c.id == id).and_then(|c| live(&c.state)).map(|l| l.streams);
-                            prop_assert_eq!(after, Some(before + 1));
+                            .map(|(streams, _, id, session, opened)| (id, session, streams, opened));
+                        let (picked, actions) = machine.pick(model.now);
+                        prop_assert_eq!(picked, expected.map(|(id, session, _, _)| (id, session)), "a flow goes to the least-loaded ready carrier with flows left, or nowhere");
+                        if let Some((id, _, streams, opened)) = expected {
+                            // The pick may also have made the carrier's successor due; the carrier itself is still held.
+                            let after = machine.carriers().iter().find(|c| c.id == id).and_then(|c| live(&c.state)).map(|l| (l.streams, l.opened));
+                            prop_assert_eq!(after, Some((streams + 1, opened + 1)));
                             model.flows.push(id);
                         }
+                        model.settle(&machine, actions)?;
+                        prop_assert!(machine.next_deadline().is_none_or(|deadline| deadline > model.now), "the machine asks to be woken in the past");
                         continue;
                     }
                     Op::CloseFlow(index) => {
@@ -630,7 +674,7 @@ mod tests {
                 prop_assert_eq!(state.is_none(), expected_gone);
                 if silent >= rules.suspect {
                     prop_assert!(!matches!(state, Some(State::Ready { .. })), "a silent carrier is still ready");
-                    prop_assert_eq!(machine.pick(), None);
+                    prop_assert_eq!(machine.pick(now).0, None);
                 }
             }
         }

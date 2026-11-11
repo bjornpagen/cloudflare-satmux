@@ -46,7 +46,8 @@ the Workers runtime.
 name, a WebSocket upgrade on `/c` carrying the device key as a bearer token, and
 [yamux](https://github.com/hashicorp/yamux/blob/master/spec.md) over the binary messages. The
 client is the only side that opens streams. Each carrier is checked with an echo when idle,
-marked suspect when the echo is late, replaced on a timer, and drained rather than cut.
+marked suspect when the echo is late, replaced on a timer or when it has opened as many
+streams as its platform allows, and drained rather than cut.
 
 **Streams.** The client writes one stream-open and the flow's first bytes in the same flight,
 without waiting. The relay answers one status byte and then the destination's bytes. Besides
@@ -153,6 +154,8 @@ end in the foreground as yourself, with nothing installed:
       SATMUX_DAEMON_SUSPECT_MS=3000 \
       SATMUX_DAEMON_ROTATE_S=600 \
       SATMUX_DAEMON_NO_CARRIER_EXIT_MS=20000 \
+      SATMUX_DAEMON_CARRIER_FLOWS=50 \
+      SATMUX_DAEMON_CARRIER_RENEW=35 \
       SATMUX_DAEMON_VERDICT_DAYS=30 \
       SATMUX_DAEMON_FIRST_PAYLOAD_MS=10 \
       SATMUX_DAEMON_TUN_MTU=1400 \
@@ -176,6 +179,10 @@ relayed, sent direct, replayed, refused and failed. `explain` prints where a nam
 
 Notes on the settings:
 
+- `SATMUX_DAEMON_CARRIER_FLOWS` is how many streams one carrier may open in its life, for a
+  relay whose platform counts them (a Workers invocation is allowed a fixed number of onward
+  connections); `SATMUX_DAEMON_CARRIER_RENEW` is how many it opens before its successor is
+  dialed. A relay that says a carrier is spent has it retired and the flow sent on another.
 - `SATMUX_DAEMON_BIND_INTERFACE` is the interface your default route uses
   (`route -n get default` on macOS).
 - `SATMUX_DAEMON_READY_FD` is a descriptor the daemon writes one newline to when the first

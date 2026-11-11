@@ -29,6 +29,8 @@ const DAEMON_ECHO_IDLE_MS: &str = "SATMUX_DAEMON_ECHO_IDLE_MS";
 const DAEMON_SUSPECT_MS: &str = "SATMUX_DAEMON_SUSPECT_MS";
 const DAEMON_ROTATE_S: &str = "SATMUX_DAEMON_ROTATE_S";
 const DAEMON_NO_CARRIER_EXIT_MS: &str = "SATMUX_DAEMON_NO_CARRIER_EXIT_MS";
+const DAEMON_CARRIER_FLOWS: &str = "SATMUX_DAEMON_CARRIER_FLOWS";
+const DAEMON_CARRIER_RENEW: &str = "SATMUX_DAEMON_CARRIER_RENEW";
 const DAEMON_VERDICT_DAYS: &str = "SATMUX_DAEMON_VERDICT_DAYS";
 const DAEMON_BIND_INTERFACE: &str = "SATMUX_DAEMON_BIND_INTERFACE";
 const DAEMON_KEY: &str = "SATMUX_DAEMON_KEY";
@@ -89,6 +91,10 @@ pub struct Common {
     pub suspect: Duration,
     pub rotate: Duration,
     pub no_carrier_exit: Duration,
+    /// Most streams one carrier opens in its life: the relay platform's allowance for it.
+    pub carrier_flows: usize,
+    /// How many a carrier opens before its successor is dialed.
+    pub carrier_renew: usize,
     pub verdict_life: Duration,
     pub bind_interface: String,
     pub key: PathBuf,
@@ -217,6 +223,8 @@ fn common(input: &mut Input) -> Result<Common, ConfigRefused> {
         suspect: input.millis(DAEMON_SUSPECT_MS)?,
         rotate: input.seconds(DAEMON_ROTATE_S)?,
         no_carrier_exit: input.millis(DAEMON_NO_CARRIER_EXIT_MS)?,
+        carrier_flows: input.parsed(DAEMON_CARRIER_FLOWS, "a count above zero", |t| usize::try_from(nonzero(t)?.get()).ok())?,
+        carrier_renew: input.parsed(DAEMON_CARRIER_RENEW, "a count above zero", |t| usize::try_from(nonzero(t)?.get()).ok())?,
         verdict_life: input.parsed(DAEMON_VERDICT_DAYS, "a whole number of days above zero", |t| {
             Some(Duration::from_secs(nonzero(t)?.get().checked_mul(SECONDS_PER_DAY)?))
         })?,
@@ -252,6 +260,8 @@ impl Common {
         put(DAEMON_SUSPECT_MS, self.suspect.as_millis().to_string());
         put(DAEMON_ROTATE_S, self.rotate.as_secs().to_string());
         put(DAEMON_NO_CARRIER_EXIT_MS, self.no_carrier_exit.as_millis().to_string());
+        put(DAEMON_CARRIER_FLOWS, self.carrier_flows.to_string());
+        put(DAEMON_CARRIER_RENEW, self.carrier_renew.to_string());
         put(DAEMON_VERDICT_DAYS, (self.verdict_life.as_secs() / SECONDS_PER_DAY).to_string());
         put(DAEMON_BIND_INTERFACE, self.bind_interface.clone());
         put(DAEMON_KEY, self.key.to_string_lossy().into_owned());
@@ -360,7 +370,7 @@ mod tests {
             0..=32u8,
         );
         let timers = (count(1 << 30), count(1 << 30), count(1 << 40), count(1 << 40), count(1 << 30), count(1 << 40), count(1 << 20));
-        let places = ("[a-z0-9]{1,12}", path(), path(), path(), count(1 << 30), count(u64::from(u16::MAX)));
+        let places = ("[a-z0-9]{1,12}", path(), path(), path(), count(1 << 30), count(u64::from(u16::MAX)), count(1 << 30), count(1 << 30));
         (relay, lists, timers, places).prop_map(|(relay, lists, timers, places)| {
             let join = |items: Vec<String>| items.join(" ");
             BTreeMap::from(
@@ -387,6 +397,8 @@ mod tests {
                     (DAEMON_STATE, places.3),
                     (DAEMON_FIRST_PAYLOAD_MS, places.4),
                     (DAEMON_TUN_MTU, places.5),
+                    (DAEMON_CARRIER_FLOWS, places.6),
+                    (DAEMON_CARRIER_RENEW, places.7),
                 ]
                 .map(|(n, v)| (n.to_owned(), v)),
             )

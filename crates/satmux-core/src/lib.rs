@@ -241,10 +241,14 @@ pub enum Status {
     TimedOut = 4,
     Limit = 5,
     Malformed = 6,
+    /// This carrier can open nothing more: the relay's platform gives one carrier a fixed
+    /// number of onward connections and they are used. Nothing was sent onward, so the same
+    /// open is good on another carrier.
+    Spent = 7,
 }
 
 impl Status {
-    pub const ALL: [Status; 7] = [
+    pub const ALL: [Status; 8] = [
         Status::Connected,
         Status::Forbidden,
         Status::NoSuchName,
@@ -252,6 +256,7 @@ impl Status {
         Status::TimedOut,
         Status::Limit,
         Status::Malformed,
+        Status::Spent,
     ];
 
     pub fn from_byte(byte: u8) -> Option<Self> {

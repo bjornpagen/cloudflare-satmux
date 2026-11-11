@@ -109,7 +109,7 @@ fn uplink(state: &Path, roots_pem: &str, key: &str, ports: Vec<u16>) -> Uplink {
     let tls = dial::tls_config(&roots).expect("roots");
     let dialer = Dialer::new(HostName::parse(RELAY_NAME).expect("a name"), tls, dial::bearer(key).expect("a key"), loopback(), STREAMS).expect("a dialer");
     Uplink::start(Parts {
-        rules: Rules { ports, streams: STREAMS, echo_idle: LONG, suspect: LONG, rotate: LONG, no_carrier_exit: LONG },
+        rules: Rules { ports, streams: STREAMS, echo_idle: LONG, suspect: LONG, rotate: LONG, no_carrier_exit: LONG, flows: usize::MAX, renew: usize::MAX },
         dialer,
         relay: vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
         dial_wait: LONG,

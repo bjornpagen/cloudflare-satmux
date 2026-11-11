@@ -179,6 +179,7 @@ pub fn refusal(status: Status) -> io::Error {
         Status::TimedOut => io::ErrorKind::TimedOut,
         Status::Limit => io::ErrorKind::ResourceBusy,
         Status::Malformed => io::ErrorKind::InvalidInput,
+        Status::Spent => io::ErrorKind::QuotaExceeded,
     };
     io::Error::new(kind, format!("the relay answered {status:?}"))
 }

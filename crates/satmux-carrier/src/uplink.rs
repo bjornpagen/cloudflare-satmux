@@ -67,6 +67,8 @@ struct Shared {
     events: mpsc::UnboundedSender<Event<Carrier>>,
     ready: watch::Sender<bool>,
     abandoned: watch::Sender<bool>,
+    /// Woken whenever an event may have made room for a stream that found none.
+    room: tokio::sync::Notify,
     dialer: Dialer,
     relay: Vec<IpAddr>,
     dial_wait: Duration,
@@ -126,6 +128,8 @@ impl Shared {
             actions
         };
         self.execute(actions);
+        // Any event may have made room: a carrier came up, or a flow ended.
+        self.room.notify_waiters();
     }
 
     fn execute(self: &Arc<Self>, actions: Vec<Action<Carrier>>) {
@@ -325,6 +329,7 @@ impl Uplink {
             events,
             ready: watch::Sender::new(false),
             abandoned: watch::Sender::new(false),
+            room: tokio::sync::Notify::new(),
             dialer: parts.dialer,
             relay: parts.relay,
             dial_wait: parts.dial_wait,
@@ -404,36 +409,53 @@ impl Uplink {
         Flow(Path::Relay { stream, _counted: counted })
     }
 
-    /// A ready carrier with room, waiting for one until `deadline` if none is ready.
+    /// A ready carrier with room and flows left, waiting until `deadline` for one: a burst
+    /// can outrun every carrier's streams or spend them all, and a successor is a dial away.
     async fn pick(&self, deadline: Instant) -> io::Result<(CarrierId, Carrier)> {
-        let mut ready = self.shared.ready.subscribe();
         loop {
-            if let Some(picked) = lock(&self.shared.machine).pick() {
+            // Armed before the pool is asked, so room made in between is not missed.
+            let room = self.shared.room.notified();
+            tokio::pin!(room);
+            room.as_mut().enable();
+            let (picked, actions) = {
+                let mut machine = lock(&self.shared.machine);
+                let picked = machine.pick(self.shared.now());
+                self.shared.ready.send_replace(matches!(machine.cover(), Cover::Covered));
+                picked
+            };
+            self.shared.execute(actions);
+            if let Some(picked) = picked {
                 return Ok(picked);
             }
-            if *ready.borrow_and_update() {
-                return Err(dial::refusal(Status::Limit));
-            }
-            match tokio::time::timeout_at(deadline, ready.changed()).await {
-                Ok(Ok(())) => {}
-                Ok(Err(_)) => return Err(io::ErrorKind::NotConnected.into()),
-                Err(_) => return Err(io::Error::new(io::ErrorKind::NotConnected, "no carrier is ready")),
+            if tokio::time::timeout_at(deadline, room).await.is_err() {
+                return Err(if *self.shared.ready.borrow() {
+                    dial::refusal(Status::Limit)
+                } else {
+                    io::Error::new(io::ErrorKind::NotConnected, "no carrier is ready")
+                });
             }
         }
     }
 
     /// Sends an open and its first payload on a ready carrier and reads the status byte. A
     /// carrier that fails before any status byte has delivered nothing, so the same flight is
-    /// sent again on another, at most once per port.
+    /// sent again on another, at most once per port. A carrier that answers `Spent` has
+    /// delivered nothing either: it is retired and the flight goes to another, as often as
+    /// that happens before the deadline, since each time is one carrier fewer to ask.
     async fn through_relay(&self, open: &Open, first: &[u8]) -> io::Result<Answered> {
         let deadline = Instant::now() + self.shared.status_wait;
         let mut last = io::Error::from(io::ErrorKind::NotConnected);
-        let carriers = lock(&self.shared.machine).rules().ports.len();
-        for _ in 0..carriers {
+        let mut failures_left = lock(&self.shared.machine).rules().ports.len();
+        while failures_left > 0 {
             let (id, carrier) = self.pick(deadline).await?;
             let counted = Counted { pool: self.shared.clone(), id };
             match tokio::time::timeout_at(deadline, carrier.session.request(open, first)).await {
                 Ok(Ok((stream, Status::Connected))) => return Ok(Answered::Connected(stream, counted)),
+                Ok(Ok((_, Status::Spent))) => {
+                    tracing::info!(carrier = %id, "the relay says this carrier is spent; the flight goes to another");
+                    self.shared.counters.replayed.fetch_add(1, Ordering::Relaxed);
+                    self.shared.apply(Event::Spent { id });
+                }
                 Ok(Ok((_, status))) => {
                     self.shared.counters.refused.fetch_add(1, Ordering::Relaxed);
                     return Ok(Answered::Refused(status));
@@ -442,6 +464,7 @@ impl Uplink {
                     tracing::debug!(carrier = %id, %error, "no status byte; the flight goes to another carrier");
                     self.shared.counters.replayed.fetch_add(1, Ordering::Relaxed);
                     last = error;
+                    failures_left -= 1;
                 }
                 Err(_) => return Err(io::Error::new(io::ErrorKind::TimedOut, "the relay sent no status byte in time")),
             }
@@ -526,7 +549,7 @@ impl Uplink {
                     let _ = writeln!(out, "carrier.{id}.state dialing\ncarrier.{id}.age_s {}", age(since));
                 }
                 State::Ready { live, born, rtt, .. } => {
-                    let _ = writeln!(out, "carrier.{id}.state ready\ncarrier.{id}.rtt_ms {}\ncarrier.{id}.age_s {}\ncarrier.{id}.streams {}", rtt.as_millis(), age(born), live.streams);
+                    let _ = writeln!(out, "carrier.{id}.state ready\ncarrier.{id}.rtt_ms {}\ncarrier.{id}.age_s {}\ncarrier.{id}.streams {}\ncarrier.{id}.opened {}", rtt.as_millis(), age(born), live.streams, live.opened);
                 }
                 State::Suspect { live, since } => {
                     let _ = writeln!(out, "carrier.{id}.state suspect\ncarrier.{id}.age_s {}\ncarrier.{id}.streams {}", age(since), live.streams);
@@ -573,6 +596,8 @@ impl Parts {
                 suspect: common.suspect,
                 rotate: common.rotate,
                 no_carrier_exit: common.no_carrier_exit,
+                flows: common.carrier_flows,
+                renew: common.carrier_renew,
             },
             dialer,
             relay,
