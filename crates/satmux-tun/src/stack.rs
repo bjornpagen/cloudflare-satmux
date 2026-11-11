@@ -3,7 +3,6 @@
 //! message, so a slow side holds the other back through TCP's own window.
 
 use std::collections::VecDeque;
-use std::future::Future;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::pin::pin;
@@ -521,74 +520,67 @@ async fn keeper(state: std::path::PathBuf, mut texts: watch::Receiver<String>) -
 }
 
 /// Runs the front end on any packet device until the device or the state folder fails.
-pub fn serve<D: Device>(
-    device: D,
-    config: TunConfig,
-    connect: Connect,
-    resolve: Resolve,
-) -> impl Future<Output = io::Result<()>> + Send {
-    async move {
-        let (address, prefix) = config.placeholders;
-        let block = Block::new(address, prefix).ok_or_else(|| refused("placeholders: not a CIDR block"))?;
-        if block.contains(config.dns_address) {
-            return Err(refused("dns_address: inside the placeholder block"));
-        }
-        let answer_ttl = u32::try_from(config.answer_ttl.as_secs()).map_err(|_| refused("answer_ttl: too long for a DNS record"))?;
-        if config.mtu < IPV4_MIN_MTU {
-            return Err(refused("mtu: smaller than IPv4 allows"));
-        }
-        let pool = store::load(&config.state, block, config.placeholder_hold)?;
+pub async fn serve<D: Device>(device: D, config: TunConfig, connect: Connect, resolve: Resolve) -> io::Result<()> {
+    let (address, prefix) = config.placeholders;
+    let block = Block::new(address, prefix).ok_or_else(|| refused("placeholders: not a CIDR block"))?;
+    if block.contains(config.dns_address) {
+        return Err(refused("dns_address: inside the placeholder block"));
+    }
+    let answer_ttl = u32::try_from(config.answer_ttl.as_secs()).map_err(|_| refused("answer_ttl: too long for a DNS record"))?;
+    if config.mtu < IPV4_MIN_MTU {
+        return Err(refused("mtu: smaller than IPv4 allows"));
+    }
+    let pool = store::load(&config.state, block, config.placeholder_hold)?;
 
-        let mut seed = [0u8; 8];
-        getrandom::fill(&mut seed).map_err(io::Error::other)?;
-        let mut interface_config = Config::new(HardwareAddress::Ip);
-        interface_config.random_seed = u64::from_ne_bytes(seed);
-        let mut queue = Queue { arriving: None, leaving: VecDeque::new(), mtu: config.mtu };
-        let started = tokio::time::Instant::now();
-        let mut interface = Interface::new(interface_config, &mut queue, StackInstant::ZERO);
-        interface.set_any_ip(true);
+    let mut seed = [0u8; 8];
+    getrandom::fill(&mut seed).map_err(io::Error::other)?;
+    let mut interface_config = Config::new(HardwareAddress::Ip);
+    interface_config.random_seed = u64::from_ne_bytes(seed);
+    let mut queue = Queue { arriving: None, leaving: VecDeque::new(), mtu: config.mtu };
+    let started = tokio::time::Instant::now();
+    let mut interface = Interface::new(interface_config, &mut queue, StackInstant::ZERO);
+    interface.set_any_ip(true);
 
-        let wake = Arc::new(Notify::new());
-        let (replies, mut replied) = mpsc::unbounded_channel();
-        let (keep, texts) = watch::channel(String::new());
-        let mut keeping = pin!(keeper(config.state.clone(), texts));
-        let mut stack = Stack {
-            interface,
-            sockets: SocketSet::new(Vec::new()),
-            queue,
-            flows: Vec::new(),
-            kept_revision: pool.revision(),
-            pool,
-            keep,
-            resolver: config.dns_address,
-            answer_ttl,
-            first_payload_wait: config.first_payload_wait,
-            started,
-            wake: wake.clone(),
-            tasks: JoinSet::new(),
-            replies,
-            connect,
-            resolve,
-        };
-        let mut packet = vec![0u8; config.mtu];
-        loop {
-            stack.turn();
-            while let Some(leaving) = stack.queue.leaving.pop_front() {
-                device.send(&leaving).await?;
+    let wake = Arc::new(Notify::new());
+    let (replies, mut replied) = mpsc::unbounded_channel();
+    let (keep, texts) = watch::channel(String::new());
+    let mut keeping = pin!(keeper(config.state.clone(), texts));
+    let mut stack = Stack {
+        interface,
+        sockets: SocketSet::new(Vec::new()),
+        queue,
+        flows: Vec::new(),
+        kept_revision: pool.revision(),
+        pool,
+        keep,
+        resolver: config.dns_address,
+        answer_ttl,
+        first_payload_wait: config.first_payload_wait,
+        started,
+        wake: wake.clone(),
+        tasks: JoinSet::new(),
+        replies,
+        connect,
+        resolve,
+    };
+    let mut packet = vec![0u8; config.mtu];
+    loop {
+        stack.turn();
+        while let Some(leaving) = stack.queue.leaving.pop_front() {
+            device.send(&leaving).await?;
+        }
+        let now = stack.now();
+        let delay = stack.interface.poll_delay(now, &stack.sockets);
+        tokio::select! {
+            read = device.recv(&mut packet) => {
+                let length = read?;
+                stack.arrive(&packet[..length]);
             }
-            let now = stack.now();
-            let delay = stack.interface.poll_delay(now, &stack.sockets);
-            tokio::select! {
-                read = device.recv(&mut packet) => {
-                    let length = read?;
-                    stack.arrive(&packet[..length]);
-                }
-                () = wake.notified() => {}
-                Some(reply) = replied.recv() => stack.answer(reply),
-                Some(_) = stack.tasks.join_next() => {}
-                kept = &mut keeping => return kept,
-                () = pause(delay) => {}
-            }
+            () = wake.notified() => {}
+            Some(reply) = replied.recv() => stack.answer(reply),
+            Some(_) = stack.tasks.join_next() => {}
+            kept = &mut keeping => return kept,
+            () = pause(delay) => {}
         }
     }
 }

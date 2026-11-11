@@ -92,7 +92,7 @@ mod tests {
                 (0..6).rev().map(move |i| v >> i & 1 == 1)
             })
             .collect();
-        bits.chunks_exact(8).map(|byte| byte.iter().fold(0u8, |acc, bit| acc << 1 | u8::from(*bit))).collect()
+        bits.as_chunks::<8>().0.iter().map(|byte| byte.iter().fold(0u8, |acc, bit| acc << 1 | u8::from(*bit))).collect()
     }
 
     proptest! {

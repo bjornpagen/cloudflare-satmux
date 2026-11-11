@@ -37,10 +37,7 @@ impl DohUrl {
             (_, Some(rest)) => (Scheme::Plain, rest, 80),
             _ => return None,
         };
-        let (authority, path) = match rest.find('/') {
-            Some(at) => (&rest[..at], &rest[at..]),
-            None => return None,
-        };
+        let (authority, path) = rest.split_at(rest.find('/')?);
         let (host, port) = match authority.rsplit_once(':') {
             Some((host, port)) if !host.ends_with(']') || !port.is_empty() => (host, port.parse().ok()?),
             _ => (authority, port),

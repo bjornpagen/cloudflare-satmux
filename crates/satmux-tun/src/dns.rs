@@ -205,7 +205,7 @@ pub enum Answer<'a> {
 fn header(head: Head, rcode: Rcode, questions: u16, answers: u16) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER);
     out.extend_from_slice(&head.id);
-    out.push(FLAG_RESPONSE | u8::from(head.recursion_desired) * FLAG_RECURSION_DESIRED);
+    out.push(FLAG_RESPONSE | (u8::from(head.recursion_desired) * FLAG_RECURSION_DESIRED));
     out.push(FLAG_RECURSION_AVAILABLE | rcode as u8);
     out.extend_from_slice(&questions.to_be_bytes());
     out.extend_from_slice(&answers.to_be_bytes());

@@ -33,7 +33,6 @@ thiserror = "=2.0.21"
 tracing = "=0.1.44"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
 proptest = "=1.12.0"
-turmoil = "=0.7.2"
 libc = "0.2"
 getrandom = "0.4"
 smoltcp = { version = "0.14", default-features = false, features = ["std", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp", "socket-udp"] }

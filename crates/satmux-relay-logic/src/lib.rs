@@ -158,10 +158,12 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
     P: Platform,
 {
-    let conn = match within(platform, limits.connect, platform.connect(&dest)).await {
-        Some(Ok(conn)) => conn,
-        Some(Err(status)) => return Ok(refuse_stream(stream, status).await),
-        None => return Ok(refuse_stream(stream, Status::TimedOut).await),
+    let conn = match within(platform, limits.connect, platform.connect(&dest)).await.unwrap_or(Err(Status::TimedOut)) {
+        Ok(conn) => conn,
+        Err(status) => {
+            refuse_stream(stream, status).await;
+            return Ok(());
+        }
     };
     stream.write_all(&[Status::Connected.byte()]).await?;
     stream.flush().await?;
@@ -186,13 +188,16 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
     P: Platform,
 {
-    let answer = match within(platform, limits.connect, platform.doh(&query)).await {
-        Some(Ok(answer)) => answer,
-        Some(Err(status)) => return Ok(refuse_stream(stream, status).await),
-        None => return Ok(refuse_stream(stream, Status::TimedOut).await),
+    let answer = match within(platform, limits.connect, platform.doh(&query)).await.unwrap_or(Err(Status::TimedOut)) {
+        Ok(answer) => answer,
+        Err(status) => {
+            refuse_stream(stream, status).await;
+            return Ok(());
+        }
     };
     let Ok(length) = u16::try_from(answer.len()) else {
-        return Ok(refuse_stream(stream, Status::Unreachable).await);
+        refuse_stream(stream, Status::Unreachable).await;
+        return Ok(());
     };
     let mut out = Vec::with_capacity(3 + answer.len());
     out.push(Status::Connected.byte());
@@ -225,7 +230,8 @@ async fn serve_echo<S: AsyncRead + AsyncWrite + Unpin>(mut stream: S, first: Vec
 
 async fn serve_source<S: AsyncRead + AsyncWrite + Unpin>(mut stream: S, limits: &Limits, bytes: u64) -> std::io::Result<()> {
     if bytes > limits.measure_bytes {
-        return Ok(refuse_stream(stream, Status::Limit).await);
+        refuse_stream(stream, Status::Limit).await;
+        return Ok(());
     }
     stream.write_all(&[Status::Connected.byte()]).await?;
     let chunk = vec![0u8; COPY_CHUNK];
