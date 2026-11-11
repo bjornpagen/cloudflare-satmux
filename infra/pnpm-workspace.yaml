@@ -1,0 +1,19 @@
+packages:
+  - .
+# A dependency is written at the exact version installed, and an engine a package refuses fails the install.
+saveExact: true
+engineStrict: true
+# No dependency runs an install script: workerd's only serves `alchemy dev`, which this package never runs.
+allowBuilds:
+  workerd: false
+# Admit a release once it is a day old.
+minimumReleaseAge: 1440
+# Every external dependency's one version: package.json names it with catalog:, and strict mode refuses a version stated anywhere else.
+catalogMode: strict
+catalog:
+  "@alchemy.run/cloudflare": 2.0.0-beta.85
+  "@effect/platform-node": 4.1.2
+  "@types/node": 26.6.6
+  alchemy: 2.0.0-beta.85
+  effect: 4.1.2
+  typescript: 7.0.2

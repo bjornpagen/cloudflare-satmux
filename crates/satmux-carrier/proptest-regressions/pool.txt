@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a42e7db1a37a0a4a0c0021f9a1913cd2201833aa61d232989e4c0bc23dc5a75b # shrinks to rules = Rules { ports: [1], streams: 2, echo_idle: 1ms, suspect: 1ms, rotate: 1ms, no_carrier_exit: 1ms }, ops = [Sleep]

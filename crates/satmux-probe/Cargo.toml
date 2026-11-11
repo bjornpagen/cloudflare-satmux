@@ -1,0 +1,16 @@
+[package]
+name = "satmux-probe"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+satmux-core.workspace = true
+satmux-carrier.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "sync", "io-util", "macros"] }
+futures.workspace = true
+bytes.workspace = true
+
+[lints]
+workspace = true

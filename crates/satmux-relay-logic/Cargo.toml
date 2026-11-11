@@ -1,0 +1,17 @@
+[package]
+name = "satmux-relay-logic"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+satmux-core.workspace = true
+futures.workspace = true
+yamux.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,23 @@
+[package]
+name = "satmux-tun"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+satmux-core.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "sync", "time", "macros", "io-util"] }
+futures.workspace = true
+bytes.workspace = true
+libc.workspace = true
+getrandom.workspace = true
+smoltcp.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+smoltcp.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "sync", "time", "macros", "io-util", "test-util"] }
+
+[lints]
+workspace = true

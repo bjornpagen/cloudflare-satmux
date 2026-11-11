@@ -1,0 +1,34 @@
+{
+	"name": "@cloudflare-satmux/infra",
+	"private": true,
+	"description": "The Alchemy stack that puts the relay on Cloudflare: one Worker, uploaded as the Rust build made it, its variables and its hostname. State lives in the same Cloudflare account.",
+	"license": "0BSD",
+	"type": "module",
+	"packageManager": "pnpm@12.16.1",
+	"devEngines": {
+		"runtime": {
+			"name": "node",
+			"version": ">=26",
+			"onFail": "error"
+		}
+	},
+	"imports": {
+		"#alchemy.run.ts": "./alchemy.run.ts",
+		"#*": "./src/*"
+	},
+	"scripts": {
+		"plan": "alchemy plan",
+		"deploy": "../build/relay && alchemy deploy",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@alchemy.run/cloudflare": "catalog:",
+		"alchemy": "catalog:",
+		"effect": "catalog:"
+	},
+	"devDependencies": {
+		"@effect/platform-node": "catalog:",
+		"@types/node": "catalog:",
+		"typescript": "catalog:"
+	}
+}

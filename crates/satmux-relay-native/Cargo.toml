@@ -1,0 +1,26 @@
+[package]
+name = "satmux-relay-native"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+satmux-core.workspace = true
+satmux-relay-logic.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "macros", "signal"] }
+tokio-util.workspace = true
+tokio-rustls.workspace = true
+rustls.workspace = true
+tokio-tungstenite.workspace = true
+futures.workspace = true
+httparse.workspace = true
+webpki-roots.workspace = true
+
+yamux.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

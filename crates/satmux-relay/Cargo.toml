@@ -1,0 +1,23 @@
+[package]
+name = "satmux-relay"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+satmux-core.workspace = true
+satmux-relay-logic.workspace = true
+futures.workspace = true
+worker.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+js-sys.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+tokio-util.workspace = true
+
+[lints]
+workspace = true
