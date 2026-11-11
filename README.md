@@ -272,11 +272,51 @@ reports geostationary services that intercept DNS, disturb port 443 and drop UDP
   drive the whole path.
 - **The tunnel front end has never carried real traffic** (as above).
 
+## Read from the code, not yet measured
+
+A review of the data path, end to end. Each of these is what the code does; what it costs on a
+real link has not been measured, so none is a finding yet.
+
+- **Upload is capped per stream.** The relay sets its connection window to exactly its streams
+  times yamux's first credit, so no stream's receive window ever grows past 256 KiB. A stream
+  uploads at most about a window per round trip: a few MB/s at 100 ms, well under 1 MB/s on a
+  geostationary link.
+- **An echo can queue behind data.** The liveness echo shares its carrier's TCP connection, so
+  its reply waits behind whatever is already in the WebSocket, TLS and kernel send buffers,
+  and behind any loss recovery. Two late replies in a row close the carrier and every stream
+  on it. Data arriving on a carrier does not count as a sign of life. This may be what retired
+  carriers during bulk transfers above.
+- **The client sends two WebSocket messages for every yamux frame** when uploading (yamux
+  writes a frame's header and body separately, and each write is a message), each copied,
+  masked and framed on its own. The relay's side coalesces them into one.
+- **Every yamux frame is flushed to the network on its own**, at both ends, so nothing is
+  coalesced across frames; and upload frames are at most 8 KiB, the size of the copy buffer
+  between the app's socket and the stream.
+- **A full frame from the relay is one byte range too long for one TLS record:** 16 KiB of
+  data plus the yamux and WebSocket headers makes a full record and a tiny second one.
+- **Four or five copies in user space each way**, and a zeroed allocation per frame.
+- **One thread each.** The daemon and the native relay both run every carrier, all TLS and
+  all copying on a single core.
+- **The native relay connects to a destination's addresses one after another** with no
+  per-address limit, resolves with the system resolver and no cache, and opens a new
+  connection for every DNS-over-HTTPS query.
+- **A flow whose server speaks first always waits the first-payload time** before it is
+  opened, and bytes the app sends after its first read wait for the relay's status byte.
+- **A carrier dial is three round trips** (TCP, TLS, the upgrade). The client keeps TLS
+  sessions and the server issues tickets, so resumption likely happens already, but early
+  data is off on both sides, so it saves no round trip.
+- **Every carrier's first dial goes to the relay's first address;** the others are tried only
+  after failures.
+- **No socket option beyond no-delay** is set on the relay (no keepalive, buffer sizes,
+  congestion control or limit on unsent data), and only keepalive is added on the client.
+
 ## Open work
 
 Roughly in the order the measurements argue for.
 
 1. Fix the cut of long-lived connections (above).
+1. Measure the items read from the code, the echo behind data first: it would explain
+   carriers lost under load, and it touches the same rule as the cut.
 2. A native relay worth deploying, which is where everything a hosted runtime forbids becomes
    possible: no stream allowance, no refused destinations, and control of the relay's own TCP.
    Concretely: take its listening sockets from the supervisor instead of binding them (socket
