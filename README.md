@@ -315,21 +315,21 @@ real link has not been measured, so none is a finding yet.
 Roughly in the order the measurements argue for.
 
 1. Fix the cut of long-lived connections (above).
-1. Measure the items read from the code, the echo behind data first: it would explain
+2. Measure the items read from the code, the echo behind data first: it would explain
    carriers lost under load, and it touches the same rule as the cut.
-2. A native relay worth deploying, which is where everything a hosted runtime forbids becomes
+3. A native relay worth deploying, which is where everything a hosted runtime forbids becomes
    possible: no stream allowance, no refused destinations, and control of the relay's own TCP.
    Concretely: take its listening sockets from the supervisor instead of binding them (socket
    activation); settings for congestion control, segment size and unsent-data limits on its
    sockets; a stream allowance of its own for testing; log lines with a priority.
-3. More than one carrier to a port. Today the pool keeps one carrier per configured port and
+4. More than one carrier to a port. Today the pool keeps one carrier per configured port and
    the ports must differ, so the carrier count is tied to how many ports the relay answers on.
-4. The cost of a dial: TLS session resumption and early data, so a replacement carrier costs a
+5. The cost of a dial: TLS session resumption and early data, so a replacement carrier costs a
    round trip less. Not yet measured whether the client resumes today.
-5. A carrier over QUIC, where the network passes UDP: streams that do not block one another
+6. A carrier over QUIC, where the network passes UDP: streams that do not block one another
    when a packet is lost, and a resumed dial with no extra round trip.
-6. A throughput benchmark, to be run only against a relay on one's own machine.
-7. A `rustfmt.toml` that states the formatting the code already has.
+7. A throughput benchmark, to be run only against a relay on one's own machine.
+8. A `rustfmt.toml` that states the formatting the code already has.
 
 Looked at and not planned:
 
